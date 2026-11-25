@@ -1,53 +1,92 @@
 # Siri Recap Collector
 
-Archive the Siri Recaps that have synced to your Mac, including expiring recaps that you haven't bookmarked. The collector reads the local Siri database and saves the title, summary, section headings, key points, start time, duration, and capture ID to SQLite. Everything runs locally with Python's standard library.
+[![Tests](https://github.com/wthrwthr/siri-recap-collector/actions/workflows/tests.yml/badge.svg)](https://github.com/wthrwthr/siri-recap-collector/actions/workflows/tests.yml)
 
-On a Mac running macOS 27.3, titles, summaries, headings, and bullets were compared with the iPhone Recaps screen. The dedicated recap table was empty. The matching records were session attachments with the source `com.apple.MindPalace` and content type `com.apple.mindpalace.capture`. This is an undocumented Apple storage format and may change. The collector can only archive content present on the Mac when it runs.
+Apple Watch Siri Recaps expire after seven days unless you save or export them. If you remember a decision two weeks later, the recap that recorded it may already be gone. Siri Recap Collector keeps a searchable copy of recaps that sync to your Mac. It preserves summaries, section headings and key points in SQLite, even after the original expires. [Apple's Siri Recap guide](https://support.apple.com/en-us/148354)
 
-## Check your Mac
+The included **Siri Recaps** agent skill lets you ask questions like *“What did the volunteer handoff recap say about Saturday setup?”* It searches the archive, opens the matching recap, and gives the assistant a title and date to cite.
 
-You'll need Python 3.9 or later and an account with Siri Recaps synced to this Mac. From the repository directory, run:
+## Try it in 30 seconds
+
+Requires Git and Python 3.9 or later. The demo uses two fictional records in memory and works without an Apple Watch, access to Siri, or an AI account.
+
+```sh
+git clone https://github.com/wthrwthr/siri-recap-collector.git
+cd siri-recap-collector
+python3 -B examples/demo.py
+```
+
+```text
+Search for 'Saturday setup' in two fictional recaps
+2026-01-16 | Volunteer handoff | demo-2
+Agreed to move Saturday setup to 9 AM. The welcome team will bring signs.
+```
+
+## Archive your own recaps
+
+On a Mac where your Siri Recaps have synced, start with a read-only check. It runs twice in memory. On an unchanged source, the first count shows inserts and the second shows those records as unchanged.
 
 ```sh
 python3 -B collector.py
 ```
 
-If you used **Choose Folders** in macOS Privacy & Security, select the specific `AgentSessionKit` directory for the app running the collector. Pass `--source-folder "/path/to/AgentSessionKit"` to every collect or install command. This opens the database in that folder without listing other containers. The parent directory and launching context can have different permissions.
-
-This reads the live SQLite store with `mode=ro`, collects into memory twice, and prints counts. For an unchanged, nonempty source, the first line shows `inserted` and the second shows `unchanged`. No archive is created by this check.
-
-**If macOS reports “Operation not permitted” for `~/Library/Daemon Containers`, stop here.** The process launching Python lacks access to the source directory. Check the launching app's access in System Settings → Privacy & Security. Terminal and a background LaunchAgent can receive different decisions. Full Disk Access is a broad permission. The installer does not change privacy settings. [Apple's guide to file access](https://support.apple.com/guide/mac-help/mchld5a35146/mac)
-
-## Save recaps
+Save the accessible recaps to the default archive used by the AI skill:
 
 ```sh
 python3 -B collector.py --archive "$HOME/Library/Application Support/SiriRecapCollector/recaps.sqlite3"
 ```
 
-Repeated runs update records by capture ID. Recaps that disappear from the source remain in the archive. The database is plaintext and new archive files are created with owner-only permissions. Run `python3 -B collector.py --watch` to collect immediately and then hourly while that foreground process stays open.
+**If macOS reports “Operation not permitted,”** review the launching app's access in System Settings → Privacy & Security. If you use **Choose Folders**, select the specific `AgentSessionKit` folder containing `AgentSessionStore.sqlite`. Pass `--source-folder "/path/to/AgentSessionKit"` to the collector and installer so they open that folder directly. [Apple's file-access guide](https://support.apple.com/guide/mac-help/mchld5a35146/mac)
 
-## Install hourly collection
+## Ask an AI assistant
+
+From the checkout, run:
+
+```sh
+python3 -B install_skill.py
+python3 -B "$HOME/.agents/skills/siri-recaps/scripts/query.py" status
+```
+
+The installer places the skill in your local Codex user directory. Inside a checkout, Codex can also discover the repository-scoped copy. In a local session with access to the archive, try:
+
+> Use $siri-recaps to find what we decided about the volunteer handoff last week. Cite the recap title and date, and flag anything that was only proposed.
+
+The helper can report archive coverage, search a literal phrase, list recent recaps by local date, and open one capture ID. Search returns up to five IDs, dates and titles by default. The assistant requests a matching record when it needs the body. Other skill-compatible hosts can use the same [skill directory](.agents/skills/siri-recaps/SKILL.md).
+
+```sh
+python3 -B .agents/skills/siri-recaps/scripts/query.py search "handoff" --limit 3
+```
+
+The collector and search helper use Python's standard library and make no network requests. The archive is plaintext SQLite with owner-only permissions on newly created files. If you use a hosted model, the selected titles and passages can enter that model's context. Recaps are generated summaries; use the cited source when a detail or speaker attribution matters.
+
+## Collect automatically
+
+For hourly capture while a foreground process stays open, use `python3 -B collector.py --watch`. To run the per-user LaunchAgent while logged in:
 
 ```sh
 python3 -B install.py
 ```
 
-The installer first tests foreground access and saves a local copy. It then verifies two runs from a per-user LaunchAgent. Only the final **Two background runs verified** message confirms successful background setup. If background access fails, the foreground archive is still available. A newly loaded job that fails verification is disabled and unloaded. An existing job is left available for diagnosis.
+The installer saves a foreground archive and then checks two distinct background runs. **Two background runs verified** confirms the job was able to collect. Terminal and the background job have separate access contexts. If only foreground collection succeeds, its archive is still usable. Review `runs.log` and `errors.log` alongside the archive.
 
-The job runs at login and hourly while logged in. The archive and count-only run log live in `~/Library/Application Support/SiriRecapCollector/`. Failures go to `errors.log`. Check the job, or stop it while keeping the archive:
+Inspect the job:
 
 ```sh
 launchctl print "gui/$(id -u)/local.siri-recap-collector"
-# To stop collection and disable it at future logins:
+```
+
+To stop it and keep the archive:
+
+```sh
 launchctl disable "gui/$(id -u)/local.siri-recap-collector"
 launchctl bootout "gui/$(id -u)/local.siri-recap-collector"
 ```
 
-Run the installer again to resume collection. If it reports a changed existing file, review that file before replacing it.
+Run the installer again to resume. Repeated collections update records by capture ID and preserve records that have disappeared from the source.
 
-## Export for a local model
+## Export and compatibility
 
-This creates a new JSON Lines file in the current folder. Each line is one recap. Choose an unused filename to protect any previous export.
+For tools that accept JSON Lines, export one document per line to an unused filename:
 
 ```sh
 (umask 077; set -C; /usr/bin/sqlite3 -readonly \
@@ -55,10 +94,6 @@ This creates a new JSON Lines file in the current folder. Each line is one recap
   "SELECT document FROM recaps ORDER BY json_extract(document, '$.start_utc')" > siri-recaps.jsonl)
 ```
 
-## Tests
+**Verified on macOS 27.3.** Mac records were checked against the iPhone Recaps screen for matching titles, summaries, headings and bullet points. On that build, the dedicated recap table was empty. The matching attachments used source `com.apple.MindPalace` and type `com.apple.mindpalace.capture`. This is an undocumented Apple format. Collection depends on what has synced to the Mac; an earlier recap that already expired may be unavailable.
 
-```sh
-python3 -B -m unittest -v
-```
-
-The tests use synthetic SQLite databases in memory. They cover source filtering, malformed attachments, repeat runs, changed and expired records, and revision ordering.
+Run `python3 -B -m unittest -v` for the synthetic tests. If another macOS build behaves differently, [open a compatibility issue](https://github.com/wthrwthr/siri-recap-collector/issues/new) with the build number, the command used, and counts or a redacted error. Please omit actual recap text, screenshots and device-specific paths.
